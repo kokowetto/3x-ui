@@ -29,6 +29,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.GET("/get/:id", a.getInbound)
 	g.GET("/getClientTraffics/:email", a.getClientTraffics)
 	g.GET("/getClientTrafficsById/:id", a.getClientTrafficsById)
+	g.GET("/iplimitStats", a.getIPLimitStats)
 
 	g.POST("/add", a.addInbound)
 	g.POST("/del/:id", a.delInbound)
@@ -91,6 +92,12 @@ func (a *InboundController) getClientTrafficsById(c *gin.Context) {
 		return
 	}
 	jsonObj(c, clientTraffics, nil)
+}
+
+// getIPLimitStats returns aggregated BAN/UNBAN statistics parsed from unified IP limit log.
+func (a *InboundController) getIPLimitStats(c *gin.Context) {
+	stats, _ := service.GetIPLimitStats(10)
+	jsonObj(c, stats, nil)
 }
 
 func (a *InboundController) addInbound(c *gin.Context) {

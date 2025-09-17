@@ -3,7 +3,6 @@ package job
 import (
 	"bufio"
 	"encoding/json"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -11,7 +10,6 @@ import (
 	"runtime"
 	"sort"
 	"time"
-
 	"x-ui/database"
 	"x-ui/database/model"
 	"x-ui/logger"
@@ -64,23 +62,14 @@ func (j *CheckClientIpJob) Run() {
 }
 
 func (j *CheckClientIpJob) clearAccessLog() {
-	logAccessP, err := os.OpenFile(xray.GetAccessPersistentLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	j.checkError(err)
-	defer logAccessP.Close()
-
 	accessLogPath, err := xray.GetAccessLogPath()
 	j.checkError(err)
-
-	file, err := os.Open(accessLogPath)
-	j.checkError(err)
-	defer file.Close()
-
-	_, err = io.Copy(logAccessP, file)
-	j.checkError(err)
-
-	err = os.Truncate(accessLogPath, 0)
-	j.checkError(err)
-
+	if err != nil || accessLogPath == "" || accessLogPath == "none" {
+		return
+	}
+	if e := os.Truncate(accessLogPath, 0); e != nil {
+		j.checkError(e)
+	}
 	j.lastClear = time.Now().Unix()
 }
 
@@ -283,7 +272,8 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 				if limitIp < len(ips) {
 					j.disAllowedIps = append(j.disAllowedIps, ips[limitIp:]...)
 					for i := limitIp; i < len(ips); i++ {
-						log.Printf("[LIMIT_IP] Email = %s || SRC = %s", clientEmail, ips[i])
+						// NOTE: <F-USER> tag added so fail2ban filter can capture the email as the user field
+						log.Printf("[LIMIT_IP] Email = <F-USER>%s</F-USER> || SRC = %s", clientEmail, ips[i])
 					}
 				}
 			}

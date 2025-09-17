@@ -41,7 +41,6 @@ os_version=$(grep "^VERSION_ID" /etc/os-release | cut -d '=' -f2 | tr -d '"' | t
 # Declare Variables
 log_folder="${XUI_LOG_FOLDER:=/var/log}"
 iplimit_log_path="${log_folder}/3xipl.log"
-iplimit_banned_log_path="${log_folder}/3xipl-banned.log"
 
 confirm() {
     if [[ $# > 1 ]]; then
@@ -1307,99 +1306,102 @@ ip_validation() {
 }
 
 iplimit_main() {
-    echo -e "\n${green}\t1.${plain} Install Fail2ban and configure IP Limit"
-    echo -e "${green}\t2.${plain} Change Ban Duration"
-    echo -e "${green}\t3.${plain} Unban Everyone"
-    echo -e "${green}\t4.${plain} Ban Logs"
-    echo -e "${green}\t5.${plain} Ban an IP Address"
-    echo -e "${green}\t6.${plain} Unban an IP Address"
-    echo -e "${green}\t7.${plain} Real-Time Logs"
-    echo -e "${green}\t8.${plain} Service Status"
-    echo -e "${green}\t9.${plain} Service Restart"
-    echo -e "${green}\t10.${plain} Uninstall Fail2ban and IP Limit"
-    echo -e "${green}\t0.${plain} Back to Main Menu"
-    read -rp "Choose an option: " choice
-    case "$choice" in
-    0)
-        show_menu
-        ;;
-    1)
-        confirm "Proceed with installation of Fail2ban & IP Limit?" "y"
-        if [[ $? == 0 ]]; then
-            install_iplimit
-        else
-            iplimit_main
-        fi
-        ;;
-    2)
-        read -rp "Please enter new Ban Duration in Minutes [default 30]: " NUM
-        if [[ $NUM =~ ^[0-9]+$ ]]; then
-            create_iplimit_jails ${NUM}
-            systemctl restart fail2ban
-        else
-            echo -e "${red}${NUM} is not a number! Please, try again.${plain}"
-        fi
-        iplimit_main
-        ;;
-    3)
-        confirm "Proceed with Unbanning everyone from IP Limit jail?" "y"
-        if [[ $? == 0 ]]; then
-            fail2ban-client reload --restart --unban 3x-ipl
-            truncate -s 0 "${iplimit_banned_log_path}"
-            echo -e "${green}All users Unbanned successfully.${plain}"
-            iplimit_main
-        else
-            echo -e "${yellow}Cancelled.${plain}"
-        fi
-        iplimit_main
-        ;;
-    4)
-        show_banlog
-        iplimit_main
-        ;;
-    5)
-        read -rp "Enter the IP address you want to ban: " ban_ip
-        ip_validation
-        if [[ $ban_ip =~ $ipv4_regex || $ban_ip =~ $ipv6_regex ]]; then
-            fail2ban-client set 3x-ipl banip "$ban_ip"
-            echo -e "${green}IP Address ${ban_ip} has been banned successfully.${plain}"
-        else
-            echo -e "${red}Invalid IP address format! Please try again.${plain}"
-        fi
-        iplimit_main
-        ;;
-    6)
-        read -rp "Enter the IP address you want to unban: " unban_ip
-        ip_validation
-        if [[ $unban_ip =~ $ipv4_regex || $unban_ip =~ $ipv6_regex ]]; then
-            fail2ban-client set 3x-ipl unbanip "$unban_ip"
-            echo -e "${green}IP Address ${unban_ip} has been unbanned successfully.${plain}"
-        else
-            echo -e "${red}Invalid IP address format! Please try again.${plain}"
-        fi
-        iplimit_main
-        ;;
-    7)
-        tail -f /var/log/fail2ban.log
-        iplimit_main
-        ;;
-    8)
-        service fail2ban status
-        iplimit_main
-        ;;
-    9)
-        systemctl restart fail2ban
-        iplimit_main
-        ;;
-    10)
-        remove_iplimit
-        iplimit_main
-        ;;
-    *)
-        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
-        iplimit_main
-        ;;
-    esac
+    # Loop-driven menu (avoids deep recursion & stack growth)
+    while true; do
+        echo -e "\n${green}\t1.${plain} Install / Reconfigure Fail2ban & IP Limit"
+        echo -e "${green}\t2.${plain} Change Ban Settings (bantime/maxretry/findtime)"
+        echo -e "${green}\t3.${plain} Unban ALL (3x-ipl jail)"
+        echo -e "${green}\t4.${plain} View Ban Logs"
+        echo -e "${green}\t5.${plain} Manually Ban an IP"
+        echo -e "${green}\t6.${plain} Manually Unban an IP"
+        echo -e "${green}\t7.${plain} Follow fail2ban.log (Ctrl+C to exit)"
+        echo -e "${green}\t8.${plain} Service Status"
+        echo -e "${green}\t9.${plain} Restart Fail2ban"
+        echo -e "${green}\t10.${plain} Remove / Uninstall"
+        echo -e "${green}\t0.${plain} Back to Main Menu"
+        read -rp "Choose an option: " choice
+        case "$choice" in
+            0)
+                return ;;  # back to caller (main menu)
+            1)
+                confirm "Proceed with installation (or reconfigure) of Fail2ban & IP Limit?" "y"
+                if [[ $? == 0 ]]; then
+                    install_iplimit
+                else
+                    echo -e "${yellow}Cancelled.${plain}"
+                fi
+                ;;
+            2)
+                read -rp "Ban Duration (minutes) [30]: " _ban
+                read -rp "Max Retries before ban [2]: " _mr
+                read -rp "Findtime window (minutes) [1]: " _ft
+                # Defaults
+                [[ -z $_ban ]] && _ban=30
+                [[ -z $_mr ]] && _mr=2
+                [[ -z $_ft ]] && _ft=1
+                if [[ $_ban =~ ^[0-9]+$ && $_mr =~ ^[0-9]+$ && $_ft =~ ^[0-9]+$ ]]; then
+                    create_iplimit_jails "$_ban" "$_mr" "${_ft}m"
+                    # Reload only this jail if possible
+                    if ! fail2ban-client reload 3x-ipl 2>/dev/null; then
+                        systemctl restart fail2ban
+                    fi
+                    echo -e "${green}Updated: bantime=${_ban}m maxretry=${_mr} findtime=${_ft}m${plain}"
+                else
+                    echo -e "${red}Invalid numeric input. No changes applied.${plain}"
+                fi
+                ;;
+            3)
+                confirm "Unban ALL IPs from 3x-ipl jail?" "y"
+                if [[ $? == 0 ]]; then
+                    # Enumerate banned IPs safely (portable across versions)
+                    banned_list=$(fail2ban-client status 3x-ipl 2>/dev/null | awk -F': ' '/Banned IP list:/ {print $2}')
+                    if [[ -n "$banned_list" ]]; then
+                        for ip in $banned_list; do
+                            [[ -n $ip ]] && fail2ban-client set 3x-ipl unbanip "$ip" >/dev/null 2>&1
+                        done
+                    fi
+                    echo -e "${green}All IPs unbanned for jail 3x-ipl.${plain}"
+                else
+                    echo -e "${yellow}Cancelled.${plain}"
+                fi
+                ;;
+            4)
+                show_banlog ;;
+            5)
+                read -rp "IP to ban: " ban_ip
+                ip_validation
+                if [[ $ban_ip =~ $ipv4_regex || $ban_ip =~ $ipv6_regex ]]; then
+                    fail2ban-client set 3x-ipl banip "$ban_ip" && echo -e "${green}${ban_ip} banned.${plain}" || echo -e "${red}Failed to ban ${ban_ip}.${plain}"
+                else
+                    echo -e "${red}Invalid IP format.${plain}"
+                fi
+                ;;
+            6)
+                read -rp "IP to unban: " unban_ip
+                ip_validation
+                if [[ $unban_ip =~ $ipv4_regex || $unban_ip =~ $ipv6_regex ]]; then
+                    fail2ban-client set 3x-ipl unbanip "$unban_ip" && echo -e "${green}${unban_ip} unbanned.${plain}" || echo -e "${red}Failed to unban ${unban_ip}.${plain}"
+                else
+                    echo -e "${red}Invalid IP format.${plain}"
+                fi
+                ;;
+            7)
+                echo -e "${yellow}Press Ctrl+C to return...${plain}"
+                tail -f /var/log/fail2ban.log
+                ;;
+            8)
+                systemctl status fail2ban.service --no-pager --full
+                fail2ban-client status 3x-ipl 2>/dev/null || true
+                ;;
+            9)
+                systemctl restart fail2ban && echo -e "${green}Fail2ban restarted.${plain}" || echo -e "${red}Restart failed.${plain}"
+                ;;
+            10)
+                remove_iplimit ;;
+            *)
+                echo -e "${red}Invalid option.${plain}" ;;
+        esac
+    done
 }
 
 install_iplimit() {
@@ -1457,14 +1459,29 @@ install_iplimit() {
     # make sure there's no conflict for jail files
     iplimit_remove_conflicts
 
-    # Check if log file exists
-    if ! test -f "${iplimit_banned_log_path}"; then
-        touch ${iplimit_banned_log_path}
-    fi
-
     # Check if service log file exists so fail2ban won't return error
     if ! test -f "${iplimit_log_path}"; then
         touch ${iplimit_log_path}
+    fi
+
+    # Install logrotate config for unified log
+    if [[ -d /etc/logrotate.d ]]; then
+        cat > /etc/logrotate.d/3xipl <<EOF
+${iplimit_log_path} {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+    fi
+
+    # Remove any previous malformed filter file (containing stray heredoc remnants)
+    if grep -q 'cat > /etc/fail2ban/action.d/3x-ipl.conf' /etc/fail2ban/filter.d/3x-ipl.conf 2>/dev/null; then
+        rm -f /etc/fail2ban/filter.d/3x-ipl.conf
     fi
 
     # Create the iplimit jail files
@@ -1551,15 +1568,11 @@ show_banlog() {
         echo ""
     fi
 
-    if [[ -f "${iplimit_banned_log_path}" ]]; then
-        echo -e "${green}3X-IPL ban log entries:${plain}"
-        if [[ -s "${iplimit_banned_log_path}" ]]; then
-            grep -v "INIT" "${iplimit_banned_log_path}" | tail -n 10 || echo -e "${yellow}No ban entries found${plain}"
-        else
-            echo -e "${yellow}Ban log file is empty${plain}"
-        fi
+    if [[ -f "${iplimit_log_path}" ]]; then
+        echo -e "${green}Recent unified log BAN/UNBAN entries:${plain}"
+        grep -E "BAN|UNBAN" "${iplimit_log_path}" | tail -n 10 || echo -e "${yellow}No ban entries found${plain}"
     else
-        echo -e "${red}Ban log file not found at: ${iplimit_banned_log_path}${plain}"
+        echo -e "${red}Unified log not found at: ${iplimit_log_path}${plain}"
     fi
 
     echo -e "\n${green}Current jail status:${plain}"
@@ -1567,64 +1580,78 @@ show_banlog() {
 }
 
 create_iplimit_jails() {
-    # Use default bantime if not passed => 30 minutes
-    local bantime="${1:-30}"
+    # Args: bantime (minutes), maxretry, findtime (with optional suffix, default seconds unless ends with m/h/d)
+    local bantime="${1:-30}"        # minutes
+    local maxretry="${2:-2}"
+    local findtime="${3:-1m}"       # default 1 minute window
 
-    # Uncomment 'allowipv6 = auto' in fail2ban.conf
-    sed -i 's/#allowipv6 = auto/allowipv6 = auto/g' /etc/fail2ban/fail2ban.conf
+    # Ensure numeric where expected (bantime/maxretry) – soft validation
+    [[ ! $bantime =~ ^[0-9]+$ ]] && bantime=30
+    [[ ! $maxretry =~ ^[0-9]+$ ]] && maxretry=2
+    # findtime may include unit suffix; minimal sanity check
+    [[ ! $findtime =~ ^[0-9]+[smhd]?$ ]] && findtime=1m
 
-    # On Debian 12+ fail2ban's default backend should be changed to systemd
-    if [[  "${release}" == "debian" && ${os_version} -ge 12 ]]; then
-        sed -i '0,/action =/s/backend = auto/backend = systemd/' /etc/fail2ban/jail.conf
+    # Enable IPv6 (non-destructive). Prefer local override file if possible
+    if grep -q '#allowipv6 = auto' /etc/fail2ban/fail2ban.conf 2>/dev/null; then
+        sed -i 's/#allowipv6 = auto/allowipv6 = auto/' /etc/fail2ban/fail2ban.conf 2>/dev/null || true
     fi
 
-    cat << EOF > /etc/fail2ban/jail.d/3x-ipl.conf
+    # Backend override for Debian 12+ via drop-in, avoid editing distributed jail.conf
+    if [[ "${release}" == "debian" && ${os_version} -ge 12 ]]; then
+        cat > /etc/fail2ban/jail.d/00-3x-backend.conf <<EOF
+[DEFAULT]
+backend = systemd
+EOF
+    fi
+
+    cat > /etc/fail2ban/action.d/3x-ipl.conf <<EOF
 [3x-ipl]
-enabled=true
-backend=auto
-filter=3x-ipl
-action=3x-ipl
-logpath=${iplimit_log_path}
-maxretry=2
-findtime=32
-bantime=${bantime}m
+enabled = true
+backend = auto
+filter  = 3x-ipl
+; NOTE: Percent signs in date format must be doubled (%%) so fail2ban's Python
+; interpolation leaves a single % for the runtime shell.
+actionstart = <iptables> -N f2b-<name>\n              <iptables> -A f2b-<name> -j <returntype>\n              <iptables> -I <chain> -p <protocol> -j f2b-<name>
+actionstop  = <iptables> -D <chain> -p <protocol> -j f2b-<name>\n              <actionflush>\n              <iptables> -X f2b-<name>
+actioncheck = <iptables> -n -L <chain> | grep -q 'f2b-<name>[ \t]'
+actionban   = <iptables> -I f2b-<name> 1 -s <ip> -j <blocktype>\n              echo "$(date +"%%Y/%%m/%%d %%H:%%M:%%S")   BAN   [Email] = <F-USER> [IP] = <ip> banned for <bantime> seconds." >> ${iplimit_log_path}
+actionunban = <iptables> -D f2b-<name> -s <ip> -j <blocktype>\n              echo "$(date +"%%Y/%%m/%%d %%H:%%M:%%S")   UNBAN [Email] = <F-USER> [IP] = <ip> unbanned." >> ${iplimit_log_path}
 EOF
 
-    cat << EOF > /etc/fail2ban/filter.d/3x-ipl.conf
+    # Write filter with a single clean [Definition] section (no indentation on EOF!)
+    cat <<'EOF' > /etc/fail2ban/filter.d/3x-ipl.conf
 [Definition]
-datepattern = ^%%Y/%%m/%%d %%H:%%M:%%S
-failregex   = \[LIMIT_IP\]\s*Email\s*=\s*<F-USER>.+</F-USER>\s*\|\|\s*SRC\s*=\s*<ADDR>
+datepattern = ^%Y/%m/%d %H:%M:%S
+# Match violation lines emitted by check_client_ip_job.go, example:
+# 2025/09/17 12:34:56 [LIMIT_IP] Email = <F-USER>user@example.com</F-USER> || SRC = 1.2.3.4
+failregex = \[LIMIT_IP\]\s*Email\s*=\s*<F-USER>\S+</F-USER>\s*\|\|\s*SRC\s*=\s*<ADDR>
 ignoreregex =
 EOF
 
-    cat << EOF > /etc/fail2ban/action.d/3x-ipl.conf
+    # If the heredoc above was malformed previously, the filter file may contain trailing script text.
+    # Keep it minimal: ensure exactly one [Definition] header.
+    if [[ $(grep -c '^\[Definition\]' /etc/fail2ban/filter.d/3x-ipl.conf 2>/dev/null) -ne 1 ]]; then
+        echo "[WARN] 3x-ipl.conf appears malformed (multiple [Definition]); please inspect manually." >&2
+    fi
+
+    cat > /etc/fail2ban/action.d/3x-ipl.conf <<EOF
 [INCLUDES]
 before = iptables-allports.conf
 
 [Definition]
-actionstart = <iptables> -N f2b-<name>
-              <iptables> -A f2b-<name> -j <returntype>
-              <iptables> -I <chain> -p <protocol> -j f2b-<name>
-
-actionstop = <iptables> -D <chain> -p <protocol> -j f2b-<name>
-             <actionflush>
-             <iptables> -X f2b-<name>
-
+actionstart = <iptables> -N f2b-<name>\n              <iptables> -A f2b-<name> -j <returntype>\n              <iptables> -I <chain> -p <protocol> -j f2b-<name>
+actionstop  = <iptables> -D <chain> -p <protocol> -j f2b-<name>\n              <actionflush>\n              <iptables> -X f2b-<name>
 actioncheck = <iptables> -n -L <chain> | grep -q 'f2b-<name>[ \t]'
-
-actionban = <iptables> -I f2b-<name> 1 -s <ip> -j <blocktype>
-            echo "\$(date +"%%Y/%%m/%%d %%H:%%M:%%S")   BAN   [Email] = <F-USER> [IP] = <ip> banned for <bantime> seconds." >> ${iplimit_banned_log_path}
-
-actionunban = <iptables> -D f2b-<name> -s <ip> -j <blocktype>
-              echo "\$(date +"%%Y/%%m/%%d %%H:%%M:%%S")   UNBAN   [Email] = <F-USER> [IP] = <ip> unbanned." >> ${iplimit_banned_log_path}
+actionban   = <iptables> -I f2b-<name> 1 -s <ip> -j <blocktype>\n              echo "\$(date +"%Y/%m/%d %H:%M:%S")   BAN   [Email] = <F-USER> [IP] = <ip> banned for <bantime> seconds." >> ${iplimit_log_path}
+actionunban = <iptables> -D f2b-<name> -s <ip> -j <blocktype>\n              echo "\$(date +"%Y/%m/%d %H:%M:%S")   UNBAN [Email] = <F-USER> [IP] = <ip> unbanned." >> ${iplimit_log_path}
 
 [Init]
-name = default
+name     = default
 protocol = tcp
-chain = INPUT
+chain    = INPUT
 EOF
 
-    echo -e "${green}Ip Limit jail files created with a bantime of ${bantime} minutes.${plain}"
+    echo -e "${green}IP Limit jail updated (bantime=${bantime}m maxretry=${maxretry} findtime=${findtime}).${plain}"
 }
 
 iplimit_remove_conflicts() {
